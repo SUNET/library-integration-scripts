@@ -20,8 +20,9 @@ from pathlib import Path
 from typing import Any
 
 import httpx2
-from errors import AuthenticationError, KeycloakAdminError
 from pydantic_settings import BaseSettings
+
+from .errors import AuthenticationError, KeycloakAdminError
 
 logger = logging.getLogger(__name__)
 

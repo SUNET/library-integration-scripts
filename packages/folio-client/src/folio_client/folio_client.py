@@ -2,7 +2,7 @@ import time
 from typing import Any, Optional, Union
 
 import requests
-from errors import AuthenticationError
+from .errors import AuthenticationError
 
 
 class FolioApiClient:

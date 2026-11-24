@@ -2,7 +2,6 @@ import os
 from typing import Any
 
 from folio_client import FolioApiClient
-from dotenv import load_dotenv
 
 
 def get_tenant_institution(
@@ -41,7 +40,6 @@ def get_tenant_all_service_points(client: FolioApiClient):
 
 if __name__ == "__main__":
     # Initialize client
-    load_dotenv()
     prefix = "BTH"
     USERNAME = os.getenv(f"FOLIO_API_USERNAME_{prefix}") or os.getenv(
         f"FOLIO_USERNAME_{prefix}"

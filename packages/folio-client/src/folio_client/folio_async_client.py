@@ -6,7 +6,8 @@ from collections.abc import Mapping
 from typing import Any, Self
 
 import httpx2
-from errors import AuthenticationError
+from .config import get_settings
+from .errors import AuthenticationError
 
 
 class FolioAsyncApiClient:
@@ -202,7 +203,6 @@ def get_defaults():
 
 
 def get_folio_client(tenant_key: str | None = None) -> FolioAsyncApiClient:
-    from ill_bridge.config import get_settings
 
     settings = get_settings(strict_env=False)
     environment = "test" if settings.environment == "local" else settings.environment
@@ -226,10 +226,7 @@ def get_folio_client(tenant_key: str | None = None) -> FolioAsyncApiClient:
         realm=folio_realm,
         tenant=folio_tenant,
     )
-
-    print(
-        f"Creating FOLIO client for tenant '{library_tenant}' (FOLIO tenant: '{folio_tenant}', realm: '{folio_realm}') in environment '{environment}'"
-    )
+    print("settings:", settings)
     print(f"===> Auth base URL: {client.auth_base_url}")
     print(f"===> API base URL: {client.api_base_url}")
     return client

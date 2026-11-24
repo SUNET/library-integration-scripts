@@ -1,0 +1,18 @@
+[project]
+name = "folio-client"
+version = "0.1.0"
+description = "Reusable FOLIO API client package"
+authors = [
+    { name = "Benedith Mulongo", email = "benedith@sunet.se" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "httpx2",
+    "pydantic",
+    "pydantic-settings",
+    "requests",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

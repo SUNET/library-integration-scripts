@@ -7,7 +7,12 @@ authors = [
     { name = "Benedith Mulongo", email = "benedith@sunet.se" }
 ]
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "folio-client",
+]
+
+[tool.uv.sources]
+folio-client = { path = "../../packages/folio-client", editable = true }
 
 [project.scripts]
 loan-renewals = "loan_renewals:main"

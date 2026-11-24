@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Literal
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
-KeycloakAdminLoginMethod = Literal["cli", "user"]
 
 
 class Settings(BaseSettings):
@@ -13,7 +11,7 @@ class Settings(BaseSettings):
 
     # Precedence -> [Settings(...) keyword arguments, os.environ, .env file, field defaults]
     model_config = SettingsConfigDict(
-        env_prefix="FOLIO_",
+        env_prefix="",
         env_file=".env",
         env_file_encoding="utf-8",
         populate_by_name=True,  # Make Settings(libris_sigel="Hal") = Settings(ILL_LIBRIS_SIGEL="Hal") = Settings(HALMSTAD_LIBRIS_USERNAME="Hal")
@@ -21,13 +19,21 @@ class Settings(BaseSettings):
     )
 
     # --- Environment -----------------------------------------------------
+    environment: str = "local"
     log_level: str = "INFO"
+
+    # --- FOLIO credentials -----------------------------------------------
+    tenant_name: str | None = None
+    folio_tenant: str | None = None
+    folio_tenant_realm: str | None = None
+    folio_tenant_username: str | None = None
+    folio_tenant_secret: SecretStr | None = None
 
     def get_folio_credentials(
         self, tenant_key: str | None = None
     ) -> tuple[str, str | None, str | None, str | None, str | None]:
         """Resolve (library_tenant, folio_tenant, folio_realm, username, secret) for a tenant."""
-        library_tenant = (tenant_key or self.tenant_name or "bth").strip().lower()
+        library_tenant = (tenant_key or self.tenant_name or "None").strip().lower()
         default_secret = (
             self.folio_tenant_secret.get_secret_value()
             if self.folio_tenant_secret is not None
