@@ -221,3 +221,5 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+library-integration-scripts/integrations/loan-renewals/loan-logic.md
+integrations/loan-renewals/loan-logic.md
