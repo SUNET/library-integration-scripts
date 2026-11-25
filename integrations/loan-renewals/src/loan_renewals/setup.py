@@ -12,7 +12,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from .utils import FolioAsyncApiClient, get_client
+from utils import FolioAsyncApiClient, get_client
 
 DEFAULT_REQUEST_POLICY_ID = "40e2d763-bc4d-403b-bfe7-14112dc7b376"
 DEFAULT_NOTICE_POLICY_ID = "c590dc70-763e-4117-8b4f-e742fe3f2f54"
