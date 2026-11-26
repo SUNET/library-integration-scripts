@@ -1,15 +1,19 @@
 id: loan-renewals
 namespace: library.circulation
 description: |
-  Schedule and orchestrate automatic FOLIO loan renewals across library tenants.
-  Business logic lives in integrations/loan-renewals; this workflow handles
-  scheduling, per-tenant fan-out, retries, secret injection, and report capture.
+  Schedule and orchestrate automatic FOLIO loan renewals across library tenants
+  using the pre-built loan-renewals Docker image.
 
 inputs:
   - id: tenants
     type: JSON
     defaults: '["bth"]'
     description: List of tenant keys to process (e.g. ["bth", "hh", "mdu"]).
+
+  - id: image
+    type: STRING
+    defaults: loan-renewals:0.1.0
+    description: Pre-built Docker image for loan-renewals (e.g. ghcr.io/<org>/loan-renewals:0.1.0).
 
   - id: environment
     type: STRING
@@ -41,16 +45,6 @@ inputs:
     defaults: false
     description: Include all overdue loans.
 
-  - id: repo_url
-    type: STRING
-    defaults: https://github.com/SUNET/library-integration-scripts.git
-    description: Git repository URL containing integrations/loan-renewals.
-
-  - id: repo_branch
-    type: STRING
-    defaults: main
-    description: Git branch or tag to check out.
-
 tasks:
   - id: run_per_tenant
     type: io.kestra.plugin.core.flow.ForEach
@@ -58,16 +52,17 @@ tasks:
     concurrencyLimit: 1
     tasks:
       - id: renew_tenant_loans
-        type: io.kestra.plugin.scripts.shell.Commands
+        type: io.kestra.plugin.scripts.python.Commands
         allowFailure: true
         retry:
           type: exponential
           interval: PT30S
           maxInterval: PT5M
           maxAttempt: 3
+        containerImage: "{{ inputs.image }}"
         taskRunner:
           type: io.kestra.plugin.scripts.runner.docker.Docker
-          image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim
+          pullPolicy: IF_NOT_PRESENT
         env:
           ENVIRONMENT: "{{ inputs.environment }}"
           TENANT_KEY: "{{ taskrun.value }}"
@@ -76,36 +71,32 @@ tasks:
           FOLIO_TENANT_USERNAME: "{{ secret('FOLIO_USERNAME_' ~ taskrun.value | upper) }}"
           FOLIO_TENANT_SECRET: "{{ secret('FOLIO_SECRET_' ~ taskrun.value | upper) }}"
         outputFiles:
-          - "renewals_report_*.json"
-        beforeCommands:
-          - apt-get update && apt-get install -y --no-install-recommends git
-          - git clone --depth 1 --branch "{{ inputs.repo_branch }}" "{{ inputs.repo_url }}" repo
+          - "reports/*.json"
         commands:
           - |
-            set -euo pipefail
-            cd repo/integrations/loan-renewals
-            uv sync --frozen
+            set -eu
+            mkdir -p reports
 
-            FLAGS=(
-              --config tenants.toml
-              --tenant "${TENANT_KEY}"
-              --renewal-window-rate "{{ inputs.renewal_window_rate }}"
-              --json-output "${WORKING_DIR}/renewals_report_${TENANT_KEY}.json"
-            )
+            set -- \
+              --config /app/tenants.toml \
+              --tenant "${TENANT_KEY}" \
+              --renewal-window-rate "{{ inputs.renewal_window_rate }}" \
+              --json-output "reports/renewals_report_${TENANT_KEY}.json"
+
             if [ "{{ inputs.execute }}" = "true" ]; then
-              FLAGS+=(--execute)
+              set -- "$@" --execute
             fi
             if [ "{{ inputs.include_fixed_policy }}" = "true" ]; then
-              FLAGS+=(--include-fixed-policy)
+              set -- "$@" --include-fixed-policy
             fi
             if [ "{{ inputs.include_grace_period }}" = "true" ]; then
-              FLAGS+=(--include-grace-period)
+              set -- "$@" --include-grace-period
             fi
             if [ "{{ inputs.include_overdue }}" = "true" ]; then
-              FLAGS+=(--include-overdue)
+              set -- "$@" --include-overdue
             fi
 
-            uv run loan-renewals "${FLAGS[@]}"
+            loan-renewals "$@"
 
 triggers:
   # Keep job_interval < smallest_target_period * renewal_window_rate:
@@ -118,6 +109,7 @@ triggers:
     disabled: true
     inputs:
       tenants: '["bth"]'
+      image: loan-renewals:0.1.0
       environment: test
       execute: false
       renewal_window_rate: 0.1

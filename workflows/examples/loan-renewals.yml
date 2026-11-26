@@ -1,0 +1,123 @@
+id: loan-renewals
+namespace: library.circulation
+description: |
+  Schedule and orchestrate automatic FOLIO loan renewals across library tenants.
+  Business logic lives in integrations/loan-renewals; this workflow handles
+  scheduling, per-tenant fan-out, retries, secret injection, and report capture.
+
+inputs:
+  - id: tenants
+    type: JSON
+    defaults: '["bth"]'
+    description: List of tenant keys to process (e.g. ["bth", "hh", "mdu"]).
+
+  - id: environment
+    type: STRING
+    defaults: test
+    description: Target FOLIO environment (test or prod).
+
+  - id: execute
+    type: BOOL
+    defaults: false
+    description: Perform actual renewals in FOLIO (false = dry-run).
+
+  - id: renewal_window_rate
+    type: FLOAT
+    defaults: 0.1
+    description: Fraction of the loan period before dueDate to trigger renewal [0.0, 1.0).
+
+  - id: include_fixed_policy
+    type: BOOL
+    defaults: false
+    description: Include Fixed due-date loan policies.
+
+  - id: include_grace_period
+    type: BOOL
+    defaults: false
+    description: Allow overdue loans still within loansPolicy.gracePeriod.
+
+  - id: include_overdue
+    type: BOOL
+    defaults: false
+    description: Include all overdue loans.
+
+  - id: repo_url
+    type: STRING
+    defaults: https://github.com/SUNET/library-integration-scripts.git
+    description: Git repository URL containing integrations/loan-renewals.
+
+  - id: repo_branch
+    type: STRING
+    defaults: main
+    description: Git branch or tag to check out.
+
+tasks:
+  - id: run_per_tenant
+    type: io.kestra.plugin.core.flow.ForEach
+    values: "{{ inputs.tenants }}"
+    concurrencyLimit: 1
+    tasks:
+      - id: renew_tenant_loans
+        type: io.kestra.plugin.scripts.shell.Commands
+        allowFailure: true
+        retry:
+          type: exponential
+          interval: PT30S
+          maxInterval: PT5M
+          maxAttempt: 3
+        taskRunner:
+          type: io.kestra.plugin.scripts.runner.docker.Docker
+          image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim
+        env:
+          ENVIRONMENT: "{{ inputs.environment }}"
+          TENANT_KEY: "{{ taskrun.value }}"
+          FOLIO_TENANT: "{{ taskrun.value }}"
+          FOLIO_TENANT_REALM: "{{ taskrun.value }}"
+          FOLIO_TENANT_USERNAME: "{{ secret('FOLIO_USERNAME_' ~ taskrun.value | upper) }}"
+          FOLIO_TENANT_SECRET: "{{ secret('FOLIO_SECRET_' ~ taskrun.value | upper) }}"
+        outputFiles:
+          - "renewals_report_*.json"
+        beforeCommands:
+          - apt-get update && apt-get install -y --no-install-recommends git
+          - git clone --depth 1 --branch "{{ inputs.repo_branch }}" "{{ inputs.repo_url }}" repo
+        commands:
+          - |
+            set -euo pipefail
+            cd repo/integrations/loan-renewals
+            uv sync --frozen
+
+            FLAGS=(
+              --config tenants.toml
+              --tenant "${TENANT_KEY}"
+              --renewal-window-rate "{{ inputs.renewal_window_rate }}"
+              --json-output "${WORKING_DIR}/renewals_report_${TENANT_KEY}.json"
+            )
+            if [ "{{ inputs.execute }}" = "true" ]; then
+              FLAGS+=(--execute)
+            fi
+            if [ "{{ inputs.include_fixed_policy }}" = "true" ]; then
+              FLAGS+=(--include-fixed-policy)
+            fi
+            if [ "{{ inputs.include_grace_period }}" = "true" ]; then
+              FLAGS+=(--include-grace-period)
+            fi
+            if [ "{{ inputs.include_overdue }}" = "true" ]; then
+              FLAGS+=(--include-overdue)
+            fi
+
+            uv run loan-renewals "${FLAGS[@]}"
+
+triggers:
+  # Keep job_interval < smallest_target_period * renewal_window_rate:
+  # - Every 6 hours ("0 */6 * * *") safely covers 7-day and 21-day policies at rate=0.1.
+  # - For 1-day policies at rate=0.1 (2.4h window), use hourly ("0 * * * *").
+  - id: scheduled_renewals
+    type: io.kestra.plugin.core.trigger.Schedule
+    cron: "0 */6 * * *"
+    timezone: Europe/Stockholm
+    disabled: true
+    inputs:
+      tenants: '["bth"]'
+      environment: test
+      execute: false
+      renewal_window_rate: 0.1

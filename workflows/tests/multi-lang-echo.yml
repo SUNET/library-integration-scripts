@@ -1,0 +1,28 @@
+id: multi_language_echo
+namespace: library.test
+
+tasks:
+- id: python_task
+  type: io.kestra.plugin.scripts.python.Script
+  script: |
+    print("Fetching records using Python")
+
+- id: javascript_task
+  type: io.kestra.plugin.scripts.node.Script
+  script: |
+    console.log("Processing results using Node.js")
+
+- id: shell_task
+  type: io.kestra.plugin.scripts.shell.Commands
+  commands:
+  - echo "Final step using Bash"
+
+triggers:
+# Keep job_interval < smallest_target_period * renewal_window_rate:
+# - Every 6 hours ("0 */6 * * *") safely covers 7-day and 21-day policies at rate=0.1.
+# - For 1-day policies at rate=0.1 (2.4h window), use hourly ("0 * * * *").
+- id: scheduled_renewals
+  type: io.kestra.plugin.core.trigger.Schedule
+  cron: "*/2 * * * *"
+  timezone: Europe/Stockholm
+  disabled: false

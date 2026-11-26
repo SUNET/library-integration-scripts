@@ -1,0 +1,15 @@
+id: shell_test_example
+namespace: library.test
+
+tasks:
+- id: shell_task
+  type: io.kestra.plugin.scripts.shell.Commands
+  commands:
+  - echo "Final step using Bash" | base64
+
+triggers:
+- id: scheduled_renewals
+  type: io.kestra.plugin.core.trigger.Schedule
+  cron: "*/3 * * * *"
+  timezone: Europe/Stockholm
+  disabled: false
