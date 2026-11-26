@@ -171,6 +171,23 @@ class AutoRenewalService:
             if isinstance(lt, dict) and lt.get("id")
         }
 
+    async def fetch_fixed_due_date_schedules(self) -> dict[str, dict[str, Any]]:
+        """Return a mapping of fixed due date schedule UUID -> schedule payload."""
+        response = await self._call_with_retry(
+            "GET fixed-due-date-schedule-storage/fixed-due-date-schedules",
+            lambda: self.client.get(
+                "fixed-due-date-schedule-storage/fixed-due-date-schedules",
+                params={"limit": 1000},
+            ),
+        )
+        response.raise_for_status()
+        schedules = response.json().get("fixedDueDateSchedules", [])
+        return {
+            s["id"]: s
+            for s in schedules
+            if isinstance(s, dict) and s.get("id")
+        }
+
     async def fetch_patron(self, user_id: str) -> dict[str, Any]:
         """Fetch a patron record, cached per run."""
         if user_id not in self._patron_cache:
@@ -203,12 +220,28 @@ class AutoRenewalService:
         started_at = run_now.isoformat()
 
         self._patron_cache.clear()
-        open_loans, patron_groups, loan_policies, loan_types = await asyncio.gather(
-            self.fetch_open_loans(),
-            self.fetch_patron_groups(),
-            self.fetch_loan_policies(),
-            self.fetch_loan_types(),
-        )
+        if self.config.include_fixed_policy:
+            (
+                open_loans,
+                patron_groups,
+                loan_policies,
+                loan_types,
+                fixed_schedules,
+            ) = await asyncio.gather(
+                self.fetch_open_loans(),
+                self.fetch_patron_groups(),
+                self.fetch_loan_policies(),
+                self.fetch_loan_types(),
+                self.fetch_fixed_due_date_schedules(),
+            )
+        else:
+            open_loans, patron_groups, loan_policies, loan_types = await asyncio.gather(
+                self.fetch_open_loans(),
+                self.fetch_patron_groups(),
+                self.fetch_loan_policies(),
+                self.fetch_loan_types(),
+            )
+            fixed_schedules = {}
 
         loans_by_patron: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for loan in open_loans:
@@ -287,6 +320,12 @@ class AutoRenewalService:
 
             group_id = patron.get("patronGroup")
             policy_id = loan.get("loanPolicyId")
+            loan_policy = loan_policies.get(policy_id) if policy_id else None
+            schedule_id = (
+                ((loan_policy or {}).get("loansPolicy") or {}).get(
+                    "fixedDueDateScheduleId"
+                )
+            )
             item = loan.get("item") or {}
             loan_type_id = (
                 loan.get("loanTypeId")
@@ -300,8 +339,11 @@ class AutoRenewalService:
                 patron_open_loans=loans_by_patron.get(patron_id, []),
                 now=run_now,
                 patron_group_name=patron_groups.get(group_id) if group_id else None,
-                loan_policy=loan_policies.get(policy_id) if policy_id else None,
+                loan_policy=loan_policy,
                 loan_type_name=loan_types.get(loan_type_id) if loan_type_id else None,
+                fixed_due_date_schedule=(
+                    fixed_schedules.get(schedule_id) if schedule_id else None
+                ),
             )
 
             allowed, decisions = self.rule_engine.evaluate(ctx)

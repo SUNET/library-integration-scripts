@@ -3,7 +3,7 @@
 Returns:
     _type_: _description_
 
-secretspec run -- uv run python src/loan_renewals/setup.py
+secretspec run -- uv run python src/loan_renewals/tests.py
 """
 import asyncio
 import json
@@ -66,12 +66,28 @@ async def get_loan_policies(client: FolioAsyncApiClient) -> list[dict[str, Any]]
     # print("Fetched loan policies:", json.dumps(json_data, indent=2))
     return json_data.get("loanPolicies", [])
 
+
+async def get_fixed_due_date_schedules(client: FolioAsyncApiClient) -> list[dict[str, Any]]:
+    """Fetch fixed due date schedules via GET /fixed-due-date-schedule-storage/fixed-due-date-schedules."""
+    params = {
+        "limit": 1000,
+    }
+    response = await client.get(
+        "fixed-due-date-schedule-storage/fixed-due-date-schedules", params=params
+    )
+    response.raise_for_status()
+    json_data = response.json()
+    save_json_to_file(json_data, "fixed_due_date_schedules.json")
+    print(json_data)
+    # print("Fetched fixed due date schedules:", json.dumps(json_data, indent=2))
+    return json_data.get("fixedDueDateSchedules", [])
+
 if __name__ == "__main__":
     folio_client = get_client()
 
     # insts = asyncio.run(get_tenant_institution(folio_client))
-    loan_policies = asyncio.run(get_loan_policies(folio_client))
-    docs = json.dumps(loan_policies, indent=2)
-    # save_json_to_file(loan_policies, "loan_policies.json")
+    fixed_due_date_schedules = asyncio.run(get_fixed_due_date_schedules(folio_client))
+    docs = json.dumps(fixed_due_date_schedules, indent=2)
+    # save_json_to_file(fixed_due_date_schedules, "fixed_due_date_schedules.json")
 
     # print("Institutions:", insts)

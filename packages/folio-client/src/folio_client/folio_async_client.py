@@ -6,7 +6,11 @@ from collections.abc import Mapping
 from typing import Any, Self
 
 import httpx2
-from .config import get_settings
+from .config import (
+    CredentialProvider,
+    EnvCredentialProvider,
+    get_settings,
+)
 from .errors import AuthenticationError
 
 
@@ -202,31 +206,27 @@ def get_defaults():
     return tenant, realm, username, secret
 
 
-def get_folio_client(tenant_key: str | None = None) -> FolioAsyncApiClient:
-
-    settings = get_settings(strict_env=False)
-    environment = "test" if settings.environment == "local" else settings.environment
-    (
-        library_tenant,
-        folio_tenant,
-        folio_realm,
-        username,
-        secret,
-    ) = settings.get_folio_credentials(tenant_key)
+def get_folio_client(
+    tenant_key: str | None = None,
+    *,
+    provider: CredentialProvider | None = None,
+) -> FolioAsyncApiClient:
+    cred_provider = provider or EnvCredentialProvider(get_settings(strict_env=False))
+    creds = cred_provider.get_credentials(tenant_key)
 
     client = FolioAsyncApiClient(
-        username=username,
-        secret=secret,
+        username=creds.username,
+        secret=creds.secret,
         auth_base_url=(
-            f"https://auth.{library_tenant.lower()}-{environment}.bibliotek.sunet.se"
+            f"https://auth.{creds.library_tenant}-{creds.environment}.bibliotek.sunet.se"
         ),
         api_base_url=(
-            f"https://api.{library_tenant.lower()}-{environment}.bibliotek.sunet.se"
+            f"https://api.{creds.library_tenant}-{creds.environment}.bibliotek.sunet.se"
         ),
-        realm=folio_realm,
-        tenant=folio_tenant,
+        realm=creds.folio_realm,
+        tenant=creds.folio_tenant,
     )
-    print("settings:", settings)
+    print(f"===> Tenant: {creds.library_tenant} ({creds.environment})")
     print(f"===> Auth base URL: {client.auth_base_url}")
     print(f"===> API base URL: {client.api_base_url}")
     return client

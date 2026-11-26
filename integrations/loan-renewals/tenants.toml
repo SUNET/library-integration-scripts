@@ -1,0 +1,25 @@
+[defaults]
+# Renewal eligibility rules
+renewal_window_rate = 0.1
+include_fixed_policy = false
+include_overdue = false
+include_grace_period = false
+allowed_loan_type_names = []   # empty = all loan types
+allowed_loan_type_ids = []     # empty = all loan types
+group_max_loan_days = { staff = 365, student = 180 }
+# default_max_loan_days = 180  # optional fallback for unlisted patron groups
+
+# Execution & API settings
+# max_renewals_per_run = 100   # optional cap per execution (omit for unlimited)
+page_size = 100
+max_retries = 3
+retry_backoff_seconds = 1.0
+
+[tenants.bth]
+enabled = true
+
+[tenants.hh]
+enabled = false
+
+[tenants.mdu]
+enabled = false

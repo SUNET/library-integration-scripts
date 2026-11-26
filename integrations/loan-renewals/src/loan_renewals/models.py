@@ -44,6 +44,7 @@ class RenewalContext:
     patron_group_name: str | None = None
     loan_policy: dict[str, Any] | None = None
     loan_type_name: str | None = None
+    fixed_due_date_schedule: dict[str, Any] | None = None
 
 
 @dataclass(slots=True)
@@ -55,8 +56,10 @@ class RenewalConfig:
     page_size: int = 100
     max_retries: int = 3
     retry_backoff_seconds: float = 1.0
-    days_before_due: int = 0
-    include_overdue: bool = True
+    renewal_window_rate: float = 0.1
+    include_overdue: bool = False
+    include_grace_period: bool = False
+    include_fixed_policy: bool = False
     allowed_loan_type_ids: set[str] | None = None
     allowed_loan_type_names: set[str] | None = None
     group_max_loan_days: dict[str, int] = field(
@@ -66,6 +69,12 @@ class RenewalConfig:
         }
     )
     default_max_loan_days: int | None = None
+
+    def __post_init__(self) -> None:
+        if not (0.0 <= self.renewal_window_rate < 1.0):
+            raise ValueError(
+                f"renewal_window_rate must be in [0.0, 1.0), got {self.renewal_window_rate}"
+            )
 
 
 @dataclass(slots=True)

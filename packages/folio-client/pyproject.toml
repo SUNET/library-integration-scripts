@@ -2,6 +2,7 @@
 name = "folio-client"
 version = "0.1.0"
 description = "Reusable FOLIO API client package"
+readme = "README.md"
 authors = [
     { name = "Benedith Mulongo", email = "benedith@sunet.se" }
 ]

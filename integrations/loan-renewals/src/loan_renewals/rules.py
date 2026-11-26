@@ -35,6 +35,88 @@ def _period_to_timedelta(duration: int, interval_id: str) -> timedelta:
     return timedelta(days=duration)
 
 
+def _find_matching_schedule_entry(
+    loan: dict[str, Any],
+    fixed_due_date_schedule: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Find the schedule entry matching a loan's dueDate or loanDate."""
+    if not fixed_due_date_schedule:
+        return None
+    schedules = fixed_due_date_schedule.get("schedules") or []
+    if not schedules:
+        return None
+
+    raw_due = loan.get("dueDate")
+    if raw_due:
+        loan_due = parse_folio_datetime(raw_due)
+        for entry in schedules:
+            if entry.get("due") and parse_folio_datetime(entry["due"]) == loan_due:
+                return entry
+
+    raw_loan_date = loan.get("loanDate")
+    if raw_loan_date:
+        loan_date = parse_folio_datetime(raw_loan_date)
+        for entry in schedules:
+            if entry.get("from") and entry.get("to"):
+                if (
+                    parse_folio_datetime(entry["from"])
+                    <= loan_date
+                    <= parse_folio_datetime(entry["to"])
+                ):
+                    return entry
+
+    return None
+
+
+def calculate_loan_period_span(
+    loan: dict[str, Any],
+    loan_policy: dict[str, Any] | None,
+    fixed_due_date_schedule: dict[str, Any] | None = None,
+) -> timedelta:
+    """Resolve the active loan period span for Rolling or Fixed policies."""
+    if loan_policy:
+        renewals_policy = loan_policy.get("renewalsPolicy") or {}
+        loans_policy = loan_policy.get("loansPolicy") or {}
+        period = renewals_policy.get("period") or loans_policy.get("period")
+        if period and period.get("duration") is not None:
+            return _period_to_timedelta(
+                int(period["duration"]),
+                str(period.get("intervalId", "Days")),
+            )
+
+        profile_id = str(loans_policy.get("profileId") or "").strip().lower()
+        if profile_id == "fixed":
+            entry = _find_matching_schedule_entry(loan, fixed_due_date_schedule)
+            if entry and entry.get("from") and entry.get("due"):
+                span = parse_folio_datetime(entry["due"]) - parse_folio_datetime(
+                    entry["from"]
+                )
+                return max(span, timedelta(0))
+            if loan.get("dueDate") and loan.get("loanDate"):
+                span = parse_folio_datetime(loan["dueDate"]) - parse_folio_datetime(
+                    loan["loanDate"]
+                )
+                return max(span, timedelta(0))
+
+    return timedelta(0)
+
+
+def calculate_grace_period(loan_policy: dict[str, Any] | None) -> timedelta:
+    """Resolve loansPolicy.gracePeriod as a timedelta (defaults to 0)."""
+    if not loan_policy:
+        return timedelta(0)
+    grace = (loan_policy.get("loansPolicy") or {}).get("gracePeriod")
+    if not grace or grace.get("duration") is None:
+        return timedelta(0)
+    return max(
+        _period_to_timedelta(
+            int(grace["duration"]),
+            str(grace.get("intervalId", "Days")),
+        ),
+        timedelta(0),
+    )
+
+
 def calculate_projected_due_date(
     loan: dict[str, Any],
     loan_policy: dict[str, Any] | None,
@@ -73,6 +155,30 @@ class OpenLoanRule:
         if status_name != "Open":
             return RuleDecision(
                 False, self.name, f"Loan status is '{status_name}', expected 'Open'"
+            )
+        return RuleDecision(True, self.name)
+
+
+class LoanPolicyProfileRule:
+    """Control whether Fixed-profile loan policies are eligible for auto-renewal."""
+
+    name = "loan_policy_profile"
+
+    def __init__(self, *, include_fixed: bool = False) -> None:
+        self.include_fixed = include_fixed
+
+    def evaluate(self, ctx: RenewalContext) -> RuleDecision:
+        if self.include_fixed or not ctx.loan_policy:
+            return RuleDecision(True, self.name)
+
+        loans_policy = ctx.loan_policy.get("loansPolicy") or {}
+        profile_id = str(loans_policy.get("profileId") or "").strip().lower()
+        if profile_id == "fixed":
+            policy_name = ctx.loan_policy.get("name") or ctx.loan_policy.get("id")
+            return RuleDecision(
+                False,
+                self.name,
+                f"Fixed loan policy '{policy_name}' is excluded (enable --include-fixed-policy to include)",
             )
         return RuleDecision(True, self.name)
 
@@ -121,18 +227,33 @@ class LoanTypeFilterRule:
 
 
 class DueWindowRule:
-    """Require the loan to be due within the configured window (or overdue)."""
+    """Require the loan to be within window_rate * loan_period before its dueDate.
+
+    By default, overdue loans (dueDate < now) are excluded so loans that may
+    already have triggered overdue fees/notices are not auto-renewed.
+    Set ``include_grace_period=True`` to allow loans still within
+    ``dueDate + loansPolicy.gracePeriod``, or ``include_overdue=True`` to
+    include all overdue loans.
+    """
 
     name = "due_window"
 
     def __init__(
         self,
         *,
-        days_before_due: int = 0,
-        include_overdue: bool = True,
+        window_rate: float = 0.1,
+        include_overdue: bool = False,
+        include_grace_period: bool = False,
+        fallback_window: timedelta = timedelta(0),
     ) -> None:
-        self.days_before_due = days_before_due
+        if not (0.0 <= window_rate < 1.0):
+            raise ValueError(
+                f"window_rate must be in [0.0, 1.0), got {window_rate}"
+            )
+        self.window_rate = window_rate
         self.include_overdue = include_overdue
+        self.include_grace_period = include_grace_period
+        self.fallback_window = fallback_window
 
     def evaluate(self, ctx: RenewalContext) -> RuleDecision:
         raw_due = ctx.loan.get("dueDate")
@@ -140,20 +261,59 @@ class DueWindowRule:
             return RuleDecision(False, self.name, "Loan has no dueDate")
 
         due_date = parse_folio_datetime(raw_due)
-        cutoff = ctx.now + timedelta(days=self.days_before_due)
+        period_span = calculate_loan_period_span(
+            ctx.loan, ctx.loan_policy, ctx.fixed_due_date_schedule
+        )
+        window = (
+            period_span * self.window_rate
+            if period_span > timedelta(0)
+            else self.fallback_window
+        )
+        cutoff = ctx.now + window
 
         if due_date > cutoff:
             return RuleDecision(
                 False,
                 self.name,
-                f"Loan dueDate {due_date.isoformat()} is after renewal window cutoff {cutoff.isoformat()}",
+                (
+                    f"Loan dueDate {due_date.isoformat()} is after renewal window "
+                    f"cutoff {cutoff.isoformat()} (rate={self.window_rate}, window={window})"
+                ),
             )
-        if not self.include_overdue and due_date < ctx.now:
+
+        if due_date < ctx.now and not self.include_overdue:
+            if self.include_grace_period:
+                grace = calculate_grace_period(ctx.loan_policy)
+                grace_deadline = due_date + grace
+                if grace > timedelta(0) and grace_deadline >= ctx.now:
+                    return RuleDecision(True, self.name)
+                if grace > timedelta(0):
+                    return RuleDecision(
+                        False,
+                        self.name,
+                        (
+                            f"Loan is overdue (dueDate {due_date.isoformat()}) and past "
+                            f"grace period ({grace}, expired {grace_deadline.isoformat()}); "
+                            "overdue loans are excluded by default (pass --include-overdue to include)"
+                        ),
+                    )
+                return RuleDecision(
+                    False,
+                    self.name,
+                    (
+                        f"Loan is overdue (dueDate {due_date.isoformat()}) and policy has no gracePeriod; "
+                        "overdue loans are excluded by default (pass --include-overdue to include)"
+                    ),
+                )
             return RuleDecision(
                 False,
                 self.name,
-                f"Loan is already overdue (dueDate {due_date.isoformat()})",
+                (
+                    f"Loan is overdue (dueDate {due_date.isoformat()}); "
+                    "overdue loans are excluded by default (pass --include-overdue to include)"
+                ),
             )
+
         return RuleDecision(True, self.name)
 
 
@@ -328,9 +488,11 @@ def build_default_rule_engine(config: RenewalConfig | None = None) -> RuleEngine
     engine = RuleEngine(
         [
             OpenLoanRule(),
+            LoanPolicyProfileRule(include_fixed=cfg.include_fixed_policy),
             DueWindowRule(
-                days_before_due=cfg.days_before_due,
+                window_rate=cfg.renewal_window_rate,
                 include_overdue=cfg.include_overdue,
+                include_grace_period=cfg.include_grace_period,
             ),
             ActivePatronRule(),
             NoOtherOverdueLoansRule(),
