@@ -129,7 +129,14 @@ Run it locally:
 
 ```bash
 docker run --rm loan-renewals:0.1.0 loan-renewals --help
-docker run --rm --env-file .env loan-renewals:0.1.0 loan-renewals --config /app/tenants.toml --tenant bth
+docker run --rm --env-file .env loan-renewals:0.1.0 loan-renewals --tenant bth
+```
+
+or use prebuilt image:
+
+```bash
+docker run --rm ghcr.io/sunet/loan-renewals:0.1.0 loan-renewals --help
+docker run --rm --env-file .env ghcr.io/sunet/loan-renewals:0.1.0 loan-renewals --config /app/tenants.toml --tenant bth
 ```
 
 ## Tests

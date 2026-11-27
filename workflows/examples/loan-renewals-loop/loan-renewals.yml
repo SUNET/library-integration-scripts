@@ -1,15 +1,21 @@
 id: loan-renewals
 namespace: library.circulation
 description: |
-  Schedule and orchestrate automatic FOLIO loan renewals across library tenants.
-  Business logic lives in integrations/loan-renewals; this workflow handles
-  scheduling, per-tenant fan-out, retries, secret injection, and report capture.
+  Option 0 (Loop): Single flow looping over multiple tenants with
+  io.kestra.plugin.core.flow.Loop.
 
 inputs:
   - id: tenants
-    type: JSON
-    defaults: '["bth"]'
+    type: ARRAY
+    itemType: STRING
+    defaults:
+      - bth
     description: List of tenant keys to process (e.g. ["bth", "hh", "mdu"]).
+
+  - id: image
+    type: STRING
+    defaults: ghcr.io/sunet/loan-renewals:0.1.0
+    description: Pre-built Docker image for loan-renewals.
 
   - id: environment
     type: STRING
@@ -41,83 +47,96 @@ inputs:
     defaults: false
     description: Include all overdue loans.
 
-  - id: repo_url
-    type: STRING
-    defaults: https://github.com/SUNET/library-integration-scripts.git
-    description: Git repository URL containing integrations/loan-renewals.
+  - id: loan_types
+    type: ARRAY
+    itemType: STRING
+    required: false
+    description: Optional list of loan type names to include (empty = all loan types).
 
-  - id: repo_branch
-    type: STRING
-    defaults: main
-    description: Git branch or tag to check out.
+  - id: group_limits
+    type: ARRAY
+    itemType: STRING
+    defaults:
+      - staff=365
+      - student=180
+    description: Max total loan days from loanDate per patron group (format group=days).
+
+  - id: max_renewals
+    type: INT
+    required: false
+    description: Optional maximum number of renewals per tenant per execution.
 
 tasks:
   - id: run_per_tenant
-    type: io.kestra.plugin.core.flow.ForEach
+    type: io.kestra.plugin.core.flow.Loop
     values: "{{ inputs.tenants }}"
     concurrencyLimit: 1
     tasks:
       - id: renew_tenant_loans
-        type: io.kestra.plugin.scripts.shell.Commands
+        type: io.kestra.plugin.scripts.python.Commands
         allowFailure: true
         retry:
           type: exponential
           interval: PT30S
           maxInterval: PT5M
           maxAttempt: 3
+        containerImage: "{{ inputs.image }}"
         taskRunner:
           type: io.kestra.plugin.scripts.runner.docker.Docker
-          image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim
+          pullPolicy: IF_NOT_PRESENT
         env:
           ENVIRONMENT: "{{ inputs.environment }}"
           TENANT_KEY: "{{ taskrun.value }}"
-          FOLIO_TENANT: "{{ taskrun.value }}"
-          FOLIO_TENANT_REALM: "{{ taskrun.value }}"
+          FOLIO_TENANT: "{{ secret('FOLIO_TENANT_' ~ taskrun.value | upper) }}"
+          FOLIO_TENANT_REALM: "{{ secret('FOLIO_REALM_' ~ taskrun.value | upper) }}"
           FOLIO_TENANT_USERNAME: "{{ secret('FOLIO_USERNAME_' ~ taskrun.value | upper) }}"
           FOLIO_TENANT_SECRET: "{{ secret('FOLIO_SECRET_' ~ taskrun.value | upper) }}"
         outputFiles:
-          - "renewals_report_*.json"
-        beforeCommands:
-          - apt-get update && apt-get install -y --no-install-recommends git
-          - git clone --depth 1 --branch "{{ inputs.repo_branch }}" "{{ inputs.repo_url }}" repo
+          - "reports/*.json"
         commands:
           - |
-            set -euo pipefail
-            cd repo/integrations/loan-renewals
-            uv sync --frozen
+            set -eu
+            mkdir -p reports
 
-            FLAGS=(
-              --config tenants.toml
-              --tenant "${TENANT_KEY}"
-              --renewal-window-rate "{{ inputs.renewal_window_rate }}"
-              --json-output "${WORKING_DIR}/renewals_report_${TENANT_KEY}.json"
-            )
+            set -- \
+              --tenant "${TENANT_KEY}" \
+              --renewal-window-rate "{{ inputs.renewal_window_rate }}" \
+              --json-output "reports/renewals_report_${TENANT_KEY}.json"
+
             if [ "{{ inputs.execute }}" = "true" ]; then
-              FLAGS+=(--execute)
+              set -- "$@" --execute
             fi
             if [ "{{ inputs.include_fixed_policy }}" = "true" ]; then
-              FLAGS+=(--include-fixed-policy)
+              set -- "$@" --include-fixed-policy
             fi
             if [ "{{ inputs.include_grace_period }}" = "true" ]; then
-              FLAGS+=(--include-grace-period)
+              set -- "$@" --include-grace-period
             fi
             if [ "{{ inputs.include_overdue }}" = "true" ]; then
-              FLAGS+=(--include-overdue)
+              set -- "$@" --include-overdue
             fi
+            {% if inputs.max_renewals != null %}
+            set -- "$@" --max-renewals "{{ inputs.max_renewals }}"
+            {% endif %}
+            {% for lt in inputs.loan_types ?? [] %}
+            set -- "$@" --loan-type "{{ lt }}"
+            {% endfor %}
+            {% for gl in inputs.group_limits ?? [] %}
+            set -- "$@" --group-limit "{{ gl }}"
+            {% endfor %}
 
-            uv run loan-renewals "${FLAGS[@]}"
+            loan-renewals "$@"
 
 triggers:
-  # Keep job_interval < smallest_target_period * renewal_window_rate:
-  # - Every 6 hours ("0 */6 * * *") safely covers 7-day and 21-day policies at rate=0.1.
-  # - For 1-day policies at rate=0.1 (2.4h window), use hourly ("0 * * * *").
   - id: scheduled_renewals
     type: io.kestra.plugin.core.trigger.Schedule
     cron: "0 */6 * * *"
     timezone: Europe/Stockholm
     disabled: true
     inputs:
-      tenants: '["bth"]'
+      tenants:
+        - bth
+      image: ghcr.io/sunet/loan-renewals:0.1.0
       environment: test
       execute: false
       renewal_window_rate: 0.1

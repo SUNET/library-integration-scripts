@@ -19,7 +19,7 @@ retry_backoff_seconds = 1.0
 enabled = true
 
 [tenants.hh]
-enabled = false
+enabled = true
 
 [tenants.mdu]
 enabled = false

@@ -1,0 +1,143 @@
+id: loan-renewals-shared
+namespace: library.circulation
+description: |
+  Option 1 (Shared flow + per-tenant triggers): Single-tenant flow reused by
+  one Schedule trigger per university, with per-tenant inputs.
+
+inputs:
+  - id: tenant
+    type: STRING
+    defaults: bth
+    description: Target library tenant key (e.g. bth, hh, mdu).
+
+  - id: image
+    type: STRING
+    defaults: ghcr.io/sunet/loan-renewals:0.1.0
+    description: Pre-built Docker image for loan-renewals.
+
+  - id: environment
+    type: STRING
+    defaults: test
+    description: Target FOLIO environment (test or prod).
+
+  - id: execute
+    type: BOOL
+    defaults: false
+    description: Perform actual renewals in FOLIO (false = dry-run).
+
+  - id: renewal_window_rate
+    type: FLOAT
+    defaults: 0.1
+    description: Fraction of the loan period before dueDate to trigger renewal [0.0, 1.0).
+
+  - id: include_fixed_policy
+    type: BOOL
+    defaults: false
+    description: Include Fixed due-date loan policies.
+
+  - id: include_grace_period
+    type: BOOL
+    defaults: false
+    description: Allow overdue loans still within loansPolicy.gracePeriod.
+
+  - id: include_overdue
+    type: BOOL
+    defaults: false
+    description: Include all overdue loans.
+
+  - id: loan_types
+    type: ARRAY
+    itemType: STRING
+    required: false
+    description: Optional list of loan type names to include (empty = all loan types).
+
+  - id: group_limits
+    type: ARRAY
+    itemType: STRING
+    defaults:
+      - staff=365
+      - student=180
+    description: Max total loan days from loanDate per patron group (format group=days).
+
+  - id: max_renewals
+    type: INT
+    required: false
+    description: Optional maximum number of renewals per execution.
+
+tasks:
+  - id: renew_loans
+    type: io.kestra.plugin.scripts.python.Commands
+    retry:
+      type: exponential
+      interval: PT30S
+      maxInterval: PT5M
+      maxAttempt: 3
+    containerImage: "{{ inputs.image }}"
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      pullPolicy: IF_NOT_PRESENT
+    env:
+      ENVIRONMENT: "{{ inputs.environment }}"
+      TENANT_KEY: "{{ inputs.tenant }}"
+      FOLIO_TENANT: "{{ secret('FOLIO_TENANT_' ~ inputs.tenant | upper) }}"
+      FOLIO_TENANT_REALM: "{{ secret('FOLIO_REALM_' ~ inputs.tenant | upper) }}"
+      FOLIO_TENANT_USERNAME: "{{ secret('FOLIO_USERNAME_' ~ inputs.tenant | upper) }}"
+      FOLIO_TENANT_SECRET: "{{ secret('FOLIO_SECRET_' ~ inputs.tenant | upper) }}"
+    outputFiles:
+      - "reports/*.json"
+    commands:
+      - |
+        set -eu
+        mkdir -p reports
+
+        set -- \
+          --tenant "${TENANT_KEY}" \
+          --renewal-window-rate "{{ inputs.renewal_window_rate }}" \
+          --json-output "reports/renewals_report_${TENANT_KEY}.json"
+
+        if [ "{{ inputs.execute }}" = "true" ]; then
+          set -- "$@" --execute
+        fi
+        if [ "{{ inputs.include_fixed_policy }}" = "true" ]; then
+          set -- "$@" --include-fixed-policy
+        fi
+        if [ "{{ inputs.include_grace_period }}" = "true" ]; then
+          set -- "$@" --include-grace-period
+        fi
+        if [ "{{ inputs.include_overdue }}" = "true" ]; then
+          set -- "$@" --include-overdue
+        fi
+        {% if inputs.max_renewals != null %}
+        set -- "$@" --max-renewals "{{ inputs.max_renewals }}"
+        {% endif %}
+        {% for lt in inputs.loan_types ?? [] %}
+        set -- "$@" --loan-type "{{ lt }}"
+        {% endfor %}
+        {% for gl in inputs.group_limits ?? [] %}
+        set -- "$@" --group-limit "{{ gl }}"
+        {% endfor %}
+
+        loan-renewals "$@"
+
+triggers:
+  - id: schedule_bth
+    type: io.kestra.plugin.core.trigger.Schedule
+    cron: "0 */6 * * *"
+    timezone: Europe/Stockholm
+    disabled: true
+    inputs:
+      tenant: bth
+      environment: test
+      execute: false
+      renewal_window_rate: 0.1
+
+  - id: schedule_hh
+    type: io.kestra.plugin.core.trigger.Schedule
+    cron: "0 */6 * * *"
+    timezone: Europe/Stockholm
+    disabled: true
+    inputs:
+      tenant: hh
+      environment: test
+      execute: false
+      renewal_window_rate: 0.1

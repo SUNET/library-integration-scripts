@@ -31,7 +31,6 @@ RUN useradd --create-home --shell /bin/sh appuser
 WORKDIR /app
 
 COPY --from=builder /app/.venv /app/.venv
-COPY --from=builder /build/integrations/loan-renewals/tenants.toml /app/tenants.toml
 
 RUN chown -R appuser:appuser /app
 USER appuser
